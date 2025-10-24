@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Request, HTTPException
+from fastapi import Depends
 from dotenv import load_dotenv
 load_dotenv()
 from fastapi import status
@@ -11,9 +12,12 @@ import jwt
 from datetime import datetime, timedelta
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import Field
 import logging
 
 router = APIRouter()
+security = HTTPBearer()
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -64,7 +68,7 @@ async def register(request: Request, payload: RegisterRequest):
     db = request.app.state.db
 
     email = payload.email
-    name = payload.name
+    # name = payload.name
     google_id = payload.google_id
 
     # If an authorization code is provided, exchange it for tokens and fetch userinfo
@@ -168,7 +172,7 @@ async def register(request: Request, payload: RegisterRequest):
         return {"status": "exists", "user": user_doc, "access_token": token, "token_type": "bearer"}
 
     # No existing user -> create one
-    doc = {"email": email, "name": name}
+    doc = {"email": email}
     if google_id:
         doc["google_id"] = google_id
 
@@ -186,3 +190,79 @@ async def register(request: Request, payload: RegisterRequest):
     token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
     return {"status": "created", "user": doc, "access_token": token, "token_type": "bearer"}
+
+
+from typing import Any, Dict
+from fastapi import Body
+
+# Accept arbitrary JSON for updates; we'll validate known fields like email when present
+
+
+async def get_current_user(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token: missing sub")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Could not validate credentials")
+
+    db = request.app.state.db
+    try:
+        oid = ObjectId(user_id)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid user id in token")
+
+    user = await db.users.find_one({"_id": oid})
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    # convert _id to str for response convenience
+    user["_id"] = str(user["_id"])
+    return user
+
+
+@router.get("/me")
+async def get_me(request: Request, current_user: dict = Depends(get_current_user)):
+    return {"user": current_user}
+
+
+@router.patch("/me")
+async def update_me(request: Request, update: Dict[str, Any] = Body(...), current_user: dict = Depends(get_current_user)):
+    db = request.app.state.db
+    updates: Dict[str, Any] = {}
+
+    # Do not allow changing the primary key
+    if "_id" in update:
+        del update["_id"]
+
+    # Validate and prepare email if provided
+    if "email" in update:
+        new_email = update["email"]
+        try:
+            # validate format
+            EmailStr(new_email)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid email format")
+        # ensure email uniqueness (case-insensitive) excluding current user
+        existing = await db.users.find_one({"email": {"$regex": f"^{new_email}$", "$options": "i"}, "_id": {"$ne": ObjectId(current_user["_id"])}})
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already in use")
+        updates["email"] = new_email
+
+    # Copy other provided fields to updates (overwrite/add)
+    for k, v in update.items():
+        if k == "email":
+            continue
+        # skip invalid key
+        if k == "_id":
+            continue
+        updates[k] = v
+
+    if not updates:
+        return {"user": current_user}
+
+    await db.users.update_one({"_id": ObjectId(current_user["_id"])}, {"$set": updates})
+    user = await db.users.find_one({"_id": ObjectId(current_user["_id"])})
+    user["_id"] = str(user["_id"])
+    return {"user": user}
