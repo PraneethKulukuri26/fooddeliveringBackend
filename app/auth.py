@@ -133,21 +133,41 @@ async def register(request: Request, payload: RegisterRequest):
             google_id = sub
             email = email or tok_email
 
-    # At this point we must have an email to create the user
+    # At this point we must have an email to proceed
     if not email:
-        raise HTTPException(status_code=400, detail="Email is required for registration")
+        raise HTTPException(status_code=400, detail="Email is required")
 
-    # Ensure google_id uniqueness if present
+    # Try to find an existing user by google_id (preferred) or email
+    found_user = None
     if google_id:
-        found = await db.users.find_one({"google_id": google_id})
-        if found:
-            raise HTTPException(status_code=400, detail="Google account already linked to another user")
+        found_user = await db.users.find_one({"google_id": google_id})
 
-    # Ensure email uniqueness (case-insensitive)
-    found_email = await db.users.find_one({"email": {"$regex": f"^{email}$", "$options": "i"}})
-    if found_email:
-        raise HTTPException(status_code=400, detail="User already exists")
+    if not found_user:
+        # case-insensitive email match
+        found_user = await db.users.find_one({"email": {"$regex": f"^{email}$", "$options": "i"}})
 
+    if found_user:
+        # existing user: ensure google_id is stored if we have it but it's missing
+        try:
+            if google_id and not found_user.get("google_id"):
+                await db.users.update_one({"_id": found_user["_id"]}, {"$set": {"google_id": google_id}})
+                found_user["google_id"] = google_id
+        except Exception:
+            # non-fatal: proceed to return token even if update fails
+            pass
+
+        # prepare user dict for response
+        user_doc = {k: (str(v) if k == "_id" else v) for k, v in found_user.items()}
+
+        # create JWT token for login
+        to_encode = {"sub": str(found_user["_id"]), "email": user_doc.get("email")}
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        to_encode.update({"exp": expire})
+        token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+        return {"status": "exists", "user": user_doc, "access_token": token, "token_type": "bearer"}
+
+    # No existing user -> create one
     doc = {"email": email, "name": name}
     if google_id:
         doc["google_id"] = google_id
