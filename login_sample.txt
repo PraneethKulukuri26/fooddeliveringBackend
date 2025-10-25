@@ -1,0 +1,54 @@
+POST /auth/login — Sample request and response
+
+Sample request (JSON)
+{
+  "email": "priya.sharma@example.com",
+  "password": "s3cureP@ssw0rd"
+}
+
+Successful response (200 OK)
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9....",
+  "token_type": "bearer",
+  "user": {
+    "_id": "653f8c2a1a2e4b3c4d5e6f71",
+    "name": "Priya Sharma",
+    "email": "priya.sharma@example.com",
+    "phone": "+919876543210",
+    "role": "donor",
+    "acceptTerms": true,
+    "location": {
+      "address": "123 MG Road, Koramangala, Bangalore",
+      "pincode": "560034",
+      "coordinates": [77.6387, 12.9352]
+    },
+    "isDoner": true,
+    "created_at": "2025-10-25T12:34:56.789000"
+  }
+}
+
+Common error responses
+
+1) Invalid credentials
+Status: 401 Unauthorized
+{
+  "detail": "Invalid credentials"
+}
+
+2) Validation error (missing fields / bad email format)
+Status: 422 Unprocessable Entity
+{
+  "detail": [
+    {
+      "loc": ["body","email"],
+      "msg": "value is not a valid email address",
+      "type": "value_error.email"
+    }
+  ]
+}
+
+Example curl
+curl -X POST "http://localhost:8000/auth/login" -H "Content-Type: application/json" -d '{
+  "email":"priya.sharma@example.com",
+  "password":"s3cureP@ssw0rd"
+}'
