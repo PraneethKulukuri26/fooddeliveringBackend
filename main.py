@@ -5,14 +5,32 @@ from fastapi import FastAPI
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.api import router as api_router
 from app.auth import router as auth_router
+from app.donor import router as donor_router
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 import logging
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 MONGO_DB = os.getenv("MONGO_DB", "backend3")
 
 app = FastAPI(title="backend3 API", version="0.1.0")
+# configure CORS to allow local frontend during development
+origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
+if isinstance(origins, str):
+    origins = [o.strip() for o in origins.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(api_router, prefix="/api")
 app.include_router(auth_router, prefix="/auth")
+app.include_router(donor_router, prefix="/donor")
+
+# Serve uploaded images from /uploads URL path
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
 @app.on_event("startup")
